@@ -32,7 +32,7 @@ pub struct Config {
     #[serde(
         rename = "tx_scan_poll_period_in_milliseconds",
         default = "config_defaults::tx_scan_poll_period",
-        deserialize_with = "common_serde_utils::duration_ms_decode"
+        deserialize_with = "core_common_serde_utils::duration_ms_decode"
     )]
     pub tx_scan_poll_period: Duration,
 }
