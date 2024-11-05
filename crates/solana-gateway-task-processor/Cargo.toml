@@ -17,7 +17,7 @@ gmp-gateway.workspace = true
 axelar-rkyv-encoding.workspace = true
 tracing.workspace = true
 futures.workspace = true
-common-serde-utils = { workspace = true, features = ["solana-sdk"] }
+common-serde-utils = { workspace = true }
 bs58.workspace = true
 relayer-engine.workspace = true
 amplifier-api.workspace = true
