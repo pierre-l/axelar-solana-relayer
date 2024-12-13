@@ -656,7 +656,7 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 [[package]]
 name = "axelar-executable"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-sol-types",
  "axelar-solana-encoding",
@@ -672,7 +672,7 @@ dependencies = [
 [[package]]
 name = "axelar-executable-old"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "axelar-message-primitives",
  "axelar-rkyv-encoding",
@@ -684,7 +684,7 @@ dependencies = [
 [[package]]
 name = "axelar-message-primitives"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -700,7 +700,7 @@ dependencies = [
 [[package]]
 name = "axelar-rkyv-encoding"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "arrayref",
  "bitflags 2.6.0",
@@ -720,7 +720,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-encoding"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "arrayref",
  "borsh 1.5.3",
@@ -737,7 +737,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-gateway"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "axelar-message-primitives",
  "axelar-solana-encoding",
@@ -759,7 +759,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-governance"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-sol-types",
  "axelar-executable-old",
@@ -775,7 +775,7 @@ dependencies = [
 [[package]]
 name = "axelar-solana-its"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -812,6 +812,8 @@ dependencies = [
  "http 1.2.0",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.5.1",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -820,10 +822,15 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper 1.0.2",
- "tower 0.5.1",
+ "tokio",
+ "tower 0.5.2",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -844,6 +851,7 @@ dependencies = [
  "sync_wrapper 1.0.2",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2300,7 +2308,7 @@ dependencies = [
 [[package]]
 name = "gateway-event-stack"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "axelar-solana-gateway",
  "base64 0.21.7",
@@ -2384,7 +2392,7 @@ checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 [[package]]
 name = "gmp-gateway"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "arrayref",
  "axelar-message-primitives",
@@ -2419,7 +2427,7 @@ dependencies = [
 [[package]]
 name = "governance-gmp"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -2740,7 +2748,7 @@ dependencies = [
  "http 1.2.0",
  "hyper 1.5.1",
  "hyper-util",
- "rustls 0.23.19",
+ "rustls 0.23.20",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls 0.26.1",
@@ -3036,7 +3044,7 @@ dependencies = [
 [[package]]
 name = "interchain-token-transfer-gmp"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -4084,7 +4092,7 @@ dependencies = [
 [[package]]
 name = "program-utils"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "borsh 1.5.3",
  "rkyv",
@@ -4212,7 +4220,7 @@ dependencies = [
  "quinn-proto 0.11.9",
  "quinn-udp 0.5.8",
  "rustc-hash 2.1.0",
- "rustls 0.23.19",
+ "rustls 0.23.20",
  "socket2",
  "thiserror 2.0.6",
  "tokio",
@@ -4248,7 +4256,7 @@ dependencies = [
  "rand 0.8.5",
  "ring 0.17.8",
  "rustc-hash 2.1.0",
- "rustls 0.23.19",
+ "rustls 0.23.20",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.6",
@@ -4428,9 +4436,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.7"
+version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b6dfecf2c74bce2466cabf93f6664d6998a69eb21e39f4207930065b27b771f"
+checksum = "03a862b389f93e68874fbf580b9de08dd02facb9a788ebadaf4a3fd33cf58834"
 dependencies = [
  "bitflags 2.6.0",
 ]
@@ -4619,7 +4627,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn 0.11.6",
- "rustls 0.23.19",
+ "rustls 0.23.20",
  "rustls-pemfile 2.2.0",
  "rustls-pki-types",
  "serde",
@@ -4652,6 +4660,32 @@ dependencies = [
  "serde",
  "task-local-extensions",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rest-service"
+version = "0.1.0"
+dependencies = [
+ "amplifier-api",
+ "axelar-solana-gateway",
+ "axum",
+ "eyre",
+ "futures",
+ "gateway-event-stack",
+ "indoc",
+ "relayer-amplifier-api-integration",
+ "relayer-engine",
+ "reqwest 0.12.9",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-listener",
+ "solana-sdk",
+ "test-log",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower-http",
+ "tracing",
 ]
 
 [[package]]
@@ -4754,7 +4788,7 @@ dependencies = [
 [[package]]
 name = "role-management"
 version = "0.1.0"
-source = "git+https://github.com/eigerco/solana-axelar.git?rev=91c8cf2#91c8cf2aa0702d6bbaff21164d79f8640815fb53"
+source = "git+https://github.com/eigerco/solana-axelar.git?rev=e212e33#e212e33de8a877e46bd5d0d74bed7597dbf3e76d"
 dependencies = [
  "bincode",
  "bitflags 2.6.0",
@@ -4901,9 +4935,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.19"
+version = "0.23.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "934b404430bb06b3fae2cba809eb45a1ab1aecd64491213d7c3301b88393f8d1"
+checksum = "5065c3f250cbd332cd894be57c40fa52387247659b14a2d6041d121547903b1b"
 dependencies = [
  "once_cell",
  "ring 0.17.8",
@@ -5162,6 +5196,16 @@ dependencies = [
  "itoa",
  "memchr",
  "ryu",
+ "serde",
+]
+
+[[package]]
+name = "serde_path_to_error"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af99884400da37c88f5e9146b7f1fd0fbcae8f6eec4e9da38b67d05486f814a6"
+dependencies = [
+ "itoa",
  "serde",
 ]
 
@@ -5446,6 +5490,7 @@ dependencies = [
  "pretty_assertions",
  "relayer-amplifier-api-integration",
  "relayer-engine",
+ "rest-service",
  "retrying-solana-http-sender",
  "serde",
  "solana-event-forwarder",
@@ -7103,7 +7148,7 @@ version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f6d0975eaace0cf0fcadee4e4aaa5da15b5c079146f2cffb67c113be122bf37"
 dependencies = [
- "rustls 0.23.19",
+ "rustls 0.23.20",
  "tokio",
 ]
 
@@ -7241,16 +7286,34 @@ dependencies = [
 
 [[package]]
 name = "tower"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2873938d487c3cfb9aed7546dc9f2711d867c9f90c46b889989a2cb84eba6b4f"
+checksum = "d039ad9159c98b70ecfd540b2573b97f7f52c3e8d9f8ad57a24b916a536975f9"
 dependencies = [
  "futures-core",
  "futures-util",
  "pin-project-lite",
- "sync_wrapper 0.1.2",
+ "sync_wrapper 1.0.2",
+ "tokio",
  "tower-layer",
  "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "403fa3b783d4b626a8ad51d766ab03cb6d2dbfc46b1c5d4448395e6628dc9697"
+dependencies = [
+ "bitflags 2.6.0",
+ "bytes",
+ "http 1.2.0",
+ "http-body 1.0.1",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,35 @@
+[package]
+name = "rest-service"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+amplifier-api.workspace = true
+axelar-solana-gateway.workspace = true
+axum.workspace = true
+eyre.workspace = true
+futures.workspace = true
+gateway-event-stack.workspace = true
+indoc.workspace = true
+relayer-amplifier-api-integration.workspace = true
+relayer-engine.workspace = true
+serde.workspace = true
+solana-client.workspace = true
+solana-listener.workspace = true
+solana-sdk.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+serde_json.workspace = true
+test-log.workspace = true
+
+[lints]
+workspace = true
