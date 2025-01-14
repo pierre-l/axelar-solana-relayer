@@ -1,5 +1,7 @@
+use core::time::Duration;
 use std::sync::Arc;
 
+use backoff::ExponentialBackoffBuilder;
 use chrono::DateTime;
 use eyre::OptionExt as _;
 use futures::SinkExt as _;
@@ -12,7 +14,9 @@ use tokio::task::JoinSet;
 
 use super::{MessageSender, SolanaTransaction};
 
+#[tracing::instrument(skip_all)]
 pub(crate) async fn fetch_and_send(
+    commitment: CommitmentConfig,
     fetched_signatures: impl Iterator<Item = Signature>,
     rpc_client: Arc<RpcClient>,
     signature_sender: MessageSender,
@@ -23,7 +27,7 @@ pub(crate) async fn fetch_and_send(
             let rpc_client = Arc::clone(&rpc_client);
             let mut signature_sender = signature_sender.clone();
             async move {
-                let tx = fetch_logs(signature, &rpc_client).await?;
+                let tx = fetch_logs(commitment, signature, &rpc_client).await?;
                 signature_sender.send(tx).await?;
                 Result::<_, eyre::Report>::Ok(())
             }
@@ -45,24 +49,37 @@ pub(crate) async fn fetch_and_send(
 /// - If the metadata is not included with the logs
 /// - If the logs are not included
 /// - If the transaction was not successful
+#[tracing::instrument(skip_all, fields(signtaure))]
 pub async fn fetch_logs(
+    commitment: CommitmentConfig,
     signature: Signature,
     rpc_client: &RpcClient,
 ) -> eyre::Result<SolanaTransaction> {
     use solana_client::rpc_config::RpcTransactionConfig;
     let config = RpcTransactionConfig {
         encoding: Some(UiTransactionEncoding::Binary),
-        commitment: Some(CommitmentConfig::confirmed()),
-        max_supported_transaction_version: Some(0),
+        commitment: Some(commitment),
+        max_supported_transaction_version: None,
     };
 
+    let operation = || async {
+        rpc_client
+            .get_transaction_with_config(&signature, config)
+            .await
+            .inspect_err(|error| tracing::error!(%error))
+            .map_err(backoff::Error::transient)
+    };
     let EncodedConfirmedTransactionWithStatusMeta {
         slot,
         transaction: transaction_with_meta,
         block_time,
-    } = rpc_client
-        .get_transaction_with_config(&signature, config)
-        .await?;
+    } = backoff::future::retry(
+        ExponentialBackoffBuilder::new()
+            .with_max_elapsed_time(Some(Duration::from_secs(10)))
+            .build(),
+        operation,
+    )
+    .await?;
 
     let meta = transaction_with_meta
         .meta

@@ -1,12 +1,16 @@
 use core::pin::Pin;
 use core::str::FromStr as _;
+use core::task::Context;
 use std::sync::Arc;
 
-use futures::stream::{poll_fn, FuturesUnordered, StreamExt as _};
+use futures::future::BoxFuture;
+use futures::stream::{poll_fn, BoxStream, FuturesUnordered, StreamExt as _};
 use futures::task::Poll;
-use futures::{SinkExt as _, Stream as _};
+use futures::{SinkExt as _, Stream};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcTransactionLogsConfig, RpcTransactionLogsFilter};
+use solana_client::rpc_response::RpcLogsResponse;
+use solana_rpc_client_api::response::Response;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::signature::Signature;
 use tracing::{info_span, Instrument as _};
@@ -24,60 +28,79 @@ pub(crate) async fn process_realtime_logs(
     mut signature_sender: MessageSender,
 ) -> Result<(), eyre::Error> {
     let gateway_program_address = config.gateway_program_address;
+    let gas_service_config_pda = config.gas_service_config_pda;
+
     'outer: loop {
         tracing::info!(
             endpoint = ?config.solana_ws.as_str(),
             ?gateway_program_address,
+            ?gas_service_config_pda,
             "init new WS connection"
         );
         let client =
             solana_client::nonblocking::pubsub_client::PubsubClient::new(config.solana_ws.as_str())
                 .await?;
-        let (ws_stream, _unsubscribe) = client
-            .logs_subscribe(
-                RpcTransactionLogsFilter::Mentions(vec![gateway_program_address.to_string()]),
-                RpcTransactionLogsConfig {
-                    commitment: Some(CommitmentConfig::finalized()),
-                },
-            )
-            .await?;
-        let mut ws_stream = ws_stream.fuse();
 
-        'first: loop {
-            // Get the first item from the ws_stream
-            let first_item = ws_stream.next().await;
-            let Some(first_item) = first_item else {
-                // Reconnect if connection dropped
-                continue 'outer;
-            };
-            // Process the first item
-            if first_item.value.err.is_none() {
-                if let Ok(sig) = Signature::from_str(&first_item.value.signature) {
-                    let t2_signature = fetch_logs(sig, &rpc_client).await?;
+        // Reason for subscribing to gateway and gas service separately
+        // (https://solana.com/docs/rpc/websocket/logssubscribe):
+        //
+        // "The `mentions` field currently only supports one Pubkey string per method call. Listing
+        // additional addresses will result in an error."
+        tracing::debug!("init gateway WS connection");
+        let (gateway_ws_stream, _unsub) =
+            sub_to_logs(&client, gateway_program_address, config.commitment).await?;
 
-                    // Fetch missed batches
-                    signature_batch_scanner::fetch_batches_in_range(
-                        &config,
-                        Arc::clone(&rpc_client),
-                        &signature_sender,
-                        Some(t2_signature.signature),
-                        latest_processed_signature,
-                    )
-                    .instrument(info_span!("fetching missed signatures"))
-                    .await?;
-                    // Send the first item
-                    signature_sender.send(t2_signature).await?;
-                    break 'first;
-                }
-            }
-        }
+        // we subscribe to all txs that contain the gas service config PDA (not just the
+        // program id, because there can be many configs).
+        tracing::debug!("init gas service WS connection");
+        let (gas_service_ws_stream, _unsub) =
+            sub_to_logs(&client, gas_service_config_pda, config.commitment).await?;
+
+        let mut ws_stream =
+            round_robin_two_streams(gateway_ws_stream.fuse(), gas_service_ws_stream.fuse())
+                // only successful txs are checked
+                .filter(|x| core::future::ready(x.value.err.is_none()));
+
+        // We have special handling for the very first message we receive:
+        // We fetch messages in batches based on the config defitned strategy to recover old
+        // messages
+        // Get the first item from the ws_stream
+        let first_item = ws_stream.next().await;
+        let Some(first_item) = first_item else {
+            // Reconnect if connection dropped
+            continue 'outer;
+        };
+        // Process the first item
+        let sig = Signature::from_str(&first_item.value.signature)
+            .expect("signature from RPC must be valid");
+        let t2_signature = fetch_logs(config.commitment, sig, &rpc_client).await?;
+        tracing::debug!(
+            ?t2_signature.signature,
+            ?latest_processed_signature,
+            "received first item from WS stream"
+        );
+
+        // Fetch missed batches
+        // The sleep is required so that the node has time to settle internal state, otherwise we
+        // get inconsistent results.
+        signature_batch_scanner::fetch_batches_in_range(
+            &config,
+            Arc::clone(&rpc_client),
+            &signature_sender,
+            latest_processed_signature,
+            Some(t2_signature.signature),
+        )
+        .instrument(info_span!("fetching missed signatures"))
+        .in_current_span()
+        .await?;
+        // Send the first item
+        signature_sender.send(t2_signature).await?;
 
         // Create the FuturesUnordered
         let mut fetch_futures = FuturesUnordered::new();
 
         // Manual polling using poll_fn
         tracing::info!("waiting realtime logs");
-
         let rpc_client = Arc::clone(&rpc_client);
         let mut merged_stream = poll_fn(move |cx| {
             // Poll fetch_futures
@@ -93,17 +116,15 @@ pub(crate) async fn process_realtime_logs(
             // Poll ws_stream
             match Pin::new(&mut ws_stream).poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if item.value.err.is_none() {
-                        if let Ok(sig) = Signature::from_str(&item.value.signature) {
-                            // Push fetch_logs future into fetch_futures
-                            let rpc_client = Arc::clone(&rpc_client);
-                            let fetch_future = async move {
-                                let log_item = fetch_logs(sig, &rpc_client).await?;
-                                tracing::info!(item = ?log_item.signature, "found tx");
-                                eyre::Result::Ok(log_item)
-                            };
-                            fetch_futures.push(fetch_future);
-                        }
+                    if let Ok(sig) = Signature::from_str(&item.value.signature) {
+                        // Push fetch_logs future into fetch_futures
+                        let rpc_client = Arc::clone(&rpc_client);
+                        let fetch_future = async move {
+                            let log_item = fetch_logs(config.commitment, sig, &rpc_client).await?;
+                            tracing::info!(item = ?log_item.signature, "found tx");
+                            eyre::Result::Ok(log_item)
+                        };
+                        fetch_futures.push(fetch_future);
                     }
                     // We return Pending here because the actual result will come from
                     // fetch_futures
@@ -131,8 +152,73 @@ pub(crate) async fn process_realtime_logs(
                 Err(err) => {
                     // Handle error in fetch_logs
                     tracing::error!(?err, "Error in merged stream");
+                    continue 'outer;
                 }
             }
         }
     }
+}
+
+// We could use `futures::stream::select` here, but it only completes when both streams
+// complete. As we want to complete when either stream completes, we need a custom
+// combinator.
+fn round_robin_two_streams<S1, S2>(mut s1: S1, mut s2: S2) -> impl Stream<Item = S1::Item>
+where
+    S1: Stream + Unpin,
+    S2: Stream<Item = S1::Item> + Unpin,
+{
+    let mut poll_first = false;
+
+    poll_fn(move |cx| {
+        // Helper to poll one stream first, then the other.
+        fn poll_round<AS, BS>(
+            cx: &mut Context<'_>,
+            stream_a: &mut AS,
+            stream_b: &mut BS,
+        ) -> Poll<Option<AS::Item>>
+        where
+            AS: Stream + Unpin,
+            BS: Stream<Item = AS::Item> + Unpin,
+        {
+            match Pin::new(stream_a).poll_next(cx) {
+                Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => match Pin::new(stream_b).poll_next(cx) {
+                    Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
+                    Poll::Ready(None) => Poll::Ready(None),
+                    Poll::Pending => Poll::Pending,
+                },
+            }
+        }
+
+        // Flip which stream is polled first.
+        poll_first = !poll_first;
+
+        if poll_first {
+            poll_round(cx, &mut s1, &mut s2)
+        } else {
+            poll_round(cx, &mut s2, &mut s1)
+        }
+    })
+}
+
+pub(crate) type UnsubscribeFn = Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>;
+
+async fn sub_to_logs(
+    client: &solana_client::nonblocking::pubsub_client::PubsubClient,
+    pubkey: solana_sdk::pubkey::Pubkey,
+    commitment: CommitmentConfig,
+) -> Result<
+    (BoxStream<'_, Response<RpcLogsResponse>>, UnsubscribeFn),
+    solana_client::pubsub_client::PubsubClientError,
+> {
+    client
+        .logs_subscribe(
+            // we subscribe to all txs that contain the pubkey
+            RpcTransactionLogsFilter::Mentions(vec![pubkey.to_string()]),
+            RpcTransactionLogsConfig {
+                commitment: Some(commitment),
+            },
+        )
+        .await
 }

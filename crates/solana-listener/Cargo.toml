@@ -23,6 +23,19 @@ core-common-serde-utils.workspace = true
 solana-client.workspace = true
 solana-sdk.workspace = true
 solana-transaction-status.workspace = true
+axelar-solana-gas-service.workspace = true
+solana-rpc-client-api.workspace = true
+backoff.workspace = true
+
+[dev-dependencies]
+axelar-solana-gateway-test-fixtures.workspace = true
+retrying-solana-http-sender.workspace = true
+axelar-solana-memo-program.workspace = true
+solana-test-validator.workspace = true
+solana-rpc-client-api.workspace = true
+solana-rpc.workspace = true
+test-log.workspace = true
+pretty_assertions.workspace = true
 
 [lints]
 workspace = true

@@ -24,7 +24,7 @@ use tracing::error;
 use typed_builder::TypedBuilder;
 
 /// The maximum elapsed time for retrying failed requests.
-const TWO_MINUTES: Duration = Duration::from_millis(2 * 60 * 1_000);
+const TWO_MINUTES: Duration = Duration::from_millis(60 * 1_000);
 
 /// Create a new Solana RPC client based on the provided config
 #[must_use]
@@ -33,7 +33,7 @@ pub fn new_client(config: &Config) -> Arc<RpcClient> {
         config.solana_http_rpc.to_string(),
         config.max_concurrent_rpc_requests,
     );
-    let config = RpcClientConfig::with_commitment(CommitmentConfig::finalized());
+    let config = RpcClientConfig::with_commitment(config.commitment);
     let client = RpcClient::new_sender(sender, config);
     Arc::new(client)
 }
@@ -77,10 +77,11 @@ impl RetryingHttpSender {
             .await
             .inspect_err(|error| error!(%error))
             .map_err(|error| match *error.kind() {
-                // Retry on networking-io related errors
-                Io(_) | Reqwest(_) => backoff::Error::transient(error),
+                // Retry on networking-io related errors and cases where the node may need some
+                // catch-up time
+                Io(_) | Reqwest(_) | SerdeJson(_) | RpcError(_) => backoff::Error::transient(error),
                 // Fail instantly on other errors
-                SerdeJson(_) | RpcError(_) | SigningError(_) | TransactionError(_) | Custom(_) => {
+                SigningError(_) | TransactionError(_) | Custom(_) => {
                     backoff::Error::permanent(error)
                 }
                 Middleware(_) => backoff::Error::permanent(error),
@@ -121,6 +122,10 @@ pub struct Config {
 
     /// The rpc of the solana node
     pub solana_http_rpc: url::Url,
+
+    /// The Solna RPC tx commitment config
+    #[serde(default = "CommitmentConfig::finalized")]
+    pub commitment: CommitmentConfig,
 }
 
 mod config_defaults {

@@ -98,3 +98,147 @@ impl SolanaListener {
         eyre::bail!("listener crashed");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::future;
+    use core::time::Duration;
+    use std::collections::BTreeSet;
+
+    use futures::StreamExt as _;
+    use pretty_assertions::{assert_eq, assert_ne};
+    use solana_sdk::commitment_config::CommitmentConfig;
+
+    use crate::component::signature_batch_scanner::test::{
+        generate_test_solana_data, setup, setup_aux_contracts,
+    };
+    use crate::{Config, MissedSignatureCatchupStrategy, SolanaListener};
+
+    #[test_log::test(tokio::test(flavor = "current_thread"))]
+    #[expect(clippy::unimplemented, reason = "needed for the test")]
+    async fn can_receive_realtime_tx_events() {
+        // 1. setup
+        let mut fixture = setup().await;
+        let (gas_config, _gas_init_sig, counter_pda, _init_memo_sig) =
+            setup_aux_contracts(&mut fixture).await;
+        // 2. generate test data
+        let generated_signs_set_1 =
+            generate_test_solana_data(&mut fixture, counter_pda, &gas_config).await;
+
+        // 3. setup client
+        let (rpc_client_url, pubsub_url) = match fixture.fixture.test_node {
+            axelar_solana_gateway_test_fixtures::base::TestNodeMode::TestValidator {
+                ref validator,
+                ..
+            } => (validator.rpc_url(), validator.rpc_pubsub_url()),
+            axelar_solana_gateway_test_fixtures::base::TestNodeMode::ProgramTest { .. } => {
+                unimplemented!()
+            }
+        };
+        let rpc_client =
+            retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
+                max_concurrent_rpc_requests: 1,
+                solana_http_rpc: rpc_client_url.parse().unwrap(),
+                commitment: CommitmentConfig::confirmed(),
+            });
+        let config = Config {
+            gateway_program_address: axelar_solana_gateway::id(),
+            gas_service_config_pda: gas_config.config_pda,
+            solana_ws: pubsub_url.parse().unwrap(),
+            missed_signature_catchup_strategy: MissedSignatureCatchupStrategy::UntilBeginning,
+            latest_processed_signature: None,
+            tx_scan_poll_period: if std::env::var("CI").is_ok() {
+                Duration::from_millis(1500)
+            } else {
+                Duration::from_millis(500)
+            },
+            commitment: CommitmentConfig::confirmed(),
+        };
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+
+        let listener = SolanaListener {
+            config,
+            rpc_client,
+            sender: tx,
+        };
+        // 4. start realtime processing
+        let processor = tokio::spawn(listener.process_internal());
+
+        {
+            // assert that we scan old signatures up to the very beginning of time
+            let init_items = generated_signs_set_1.flatten_sequentially();
+            let fetched = rx
+                .by_ref()
+                .map(|x| {
+                    assert!(!x.logs.is_empty(), "we expect txs to contain logs");
+                    assert_ne!(!x.cost_in_lamports, 0, "tx cost should not be 0");
+
+                    x.signature
+                })
+                // all init items + the 2 deployment txs + memo_and_gas signatures another time
+                // because it's picked up by both WS streams
+                .take(
+                    init_items
+                        .len()
+                        .saturating_add(2)
+                        .saturating_add(generated_signs_set_1.memo_and_gas.len()),
+                )
+                .collect::<BTreeSet<_>>()
+                .await;
+            let init_items_btree = init_items.clone().into_iter().collect::<BTreeSet<_>>();
+            let is_finished = processor.is_finished();
+            if is_finished {
+                processor.await.unwrap().unwrap();
+                panic!();
+            }
+            assert_eq!(
+                fetched
+                    .intersection(&init_items_btree)
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                init_items_btree,
+                "expect to have fetched every single item"
+            );
+        };
+
+        for _ in 0..2_u8 {
+            // 4. generate more test data
+            let generated_signs_set_2 =
+                generate_test_solana_data(&mut fixture, counter_pda, &gas_config).await;
+            // 5. assert that we receive all the items we generated, and there's no overlap with the
+            //    old data
+            let new_items = generated_signs_set_2.flatten_sequentially();
+            let last_signature = new_items.last().unwrap();
+            let mut prev = *last_signature;
+            let fetched = rx
+                .by_ref()
+                .map(|x| {
+                    assert!(!x.logs.is_empty(), "we expect txs to contain logs");
+                    assert_ne!(!x.cost_in_lamports, 0, "tx cost should not be 0");
+
+                    x.signature
+                })
+                .take_while(|x| {
+                    prev = *x;
+                    future::ready(*last_signature != prev)
+                })
+                .chain(futures::stream::iter([*last_signature]))
+                .collect::<BTreeSet<_>>()
+                .await;
+            let new_items_btree = new_items.clone().into_iter().collect::<BTreeSet<_>>();
+            let is_finished = processor.is_finished();
+            if is_finished {
+                processor.await.unwrap().unwrap();
+                panic!();
+            }
+            assert_eq!(
+                fetched
+                    .intersection(&new_items_btree)
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                new_items_btree,
+                "expect to have fetched every single item"
+            );
+        }
+    }
+}

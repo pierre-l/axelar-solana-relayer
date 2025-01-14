@@ -3,6 +3,7 @@
 use core::time::Duration;
 
 use serde::Deserialize;
+use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
 use typed_builder::TypedBuilder;
@@ -15,6 +16,10 @@ pub struct Config {
     #[builder(default = config_defaults::gateway_program_address())]
     #[serde(default = "config_defaults::gateway_program_address")]
     pub gateway_program_address: Pubkey,
+
+    /// Gas service config PDA
+    #[serde(deserialize_with = "common_serde_utils::pubkey_decode")]
+    pub gas_service_config_pda: Pubkey,
 
     /// The websocket endpoint of the solana node
     pub solana_ws: url::Url,
@@ -35,6 +40,10 @@ pub struct Config {
         deserialize_with = "core_common_serde_utils::duration_ms_decode"
     )]
     pub tx_scan_poll_period: Duration,
+
+    /// The commitment level for the solana node tx state
+    #[serde(default = "CommitmentConfig::finalized")]
+    pub commitment: CommitmentConfig,
 }
 
 /// The strategy which defines on how we want to handle parsing historical signatures.

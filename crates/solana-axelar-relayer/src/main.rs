@@ -112,6 +112,7 @@ mod tests {
 
     use amplifier_api::identity::Identity;
     use pretty_assertions::assert_eq;
+    use solana_listener::solana_sdk::commitment_config::CommitmentConfig;
     use solana_listener::solana_sdk::pubkey::Pubkey;
     use solana_listener::solana_sdk::signature::{Keypair, Signature};
     use solana_listener::MissedSignatureCatchupStrategy;
@@ -125,6 +126,8 @@ mod tests {
         let chain = "solana-devnet";
         let gateway_program_address = Pubkey::new_unique();
         let gateway_program_address_as_str = gateway_program_address.to_string();
+        let gas_service_config_pda = Pubkey::new_unique();
+        let gas_service_config_pda_as_str = gas_service_config_pda.to_string();
         let solana_rpc = "https://api.solana-devnet.com".parse()?;
         let solana_ws = "wss://api.solana-devnet.com".parse()?;
         let solana_tx_scan_poll_period = Duration::from_millis(42);
@@ -154,6 +157,7 @@ mod tests {
 
             [solana_listener_component]
             gateway_program_address = "{gateway_program_address_as_str}"
+            gas_service_config_pda = "{gas_service_config_pda_as_str}"
             solana_ws = "{solana_ws}"
             tx_scan_poll_period_in_milliseconds = {solana_tx_scan_poll_period_ms}
             missed_signature_catchup_strategy = "{missed_signature_catchup_strategy}"
@@ -162,6 +166,7 @@ mod tests {
             [solana_gateway_task_processor]
             signing_keypair = "{signing_keypair_as_str}"
             gateway_program_address = "{gateway_program_address_as_str}"
+            gas_service_config_pda = "{gas_service_config_pda_as_str}"
 
             [solana_rpc]            
             max_concurrent_rpc_requests = {max_concurrent_rpc_requests}
@@ -186,18 +191,22 @@ mod tests {
             },
             solana_listener_component: solana_listener::Config {
                 gateway_program_address,
+                gas_service_config_pda,
                 tx_scan_poll_period: solana_tx_scan_poll_period,
                 solana_ws,
                 missed_signature_catchup_strategy: MissedSignatureCatchupStrategy::UntilBeginning,
                 latest_processed_signature: Some(Signature::from_str(&latest_processed_signature)?),
+                commitment: CommitmentConfig::finalized(),
             },
             solana_gateway_task_processor: solana_gateway_task_processor::Config {
                 gateway_program_address,
+                gas_service_config_pda,
                 signing_keypair,
             },
             solana_rpc: retrying_solana_http_sender::Config {
                 max_concurrent_rpc_requests,
                 solana_http_rpc: solana_rpc,
+                commitment: CommitmentConfig::finalized(),
             },
             storage_path: "./store".parse().unwrap(),
             rest_service: rest_service::Config {
