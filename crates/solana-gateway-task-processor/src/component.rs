@@ -5,7 +5,7 @@ use core::task::Poll;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use amplifier_api::chrono::DateTime;
+use amplifier_api::chrono::{DateTime, Utc};
 use amplifier_api::types::{
     BigInt, CannotExecuteMessageEventV2, CannotExecuteMessageEventV2Metadata,
     CannotExecuteMessageReason, Event, EventBase, EventId, EventMetadata, MessageExecutedEvent,
@@ -27,17 +27,14 @@ use num_traits::FromPrimitive as _;
 use relayer_amplifier_api_integration::AmplifierCommand;
 use relayer_amplifier_state::State;
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcTransactionConfig;
 use solana_client::rpc_response::RpcSimulateTransactionResult;
+use solana_listener::fetch_logs;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::instruction::{Instruction, InstructionError};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{Keypair, Signature};
 use solana_sdk::signer::Signer as _;
 use solana_sdk::transaction::TransactionError;
-use solana_transaction_status::{
-    EncodedConfirmedTransactionWithStatusMeta, UiTransactionEncoding, UiTransactionStatusMeta,
-};
 use tracing::{info_span, instrument, Instrument as _};
 
 use crate::config;
@@ -157,6 +154,7 @@ impl<S: State> SolanaTxPusher<S> {
             name_of_the_solana_chain: self.name_on_amplifier.clone(),
             gas_service_config_pda: self.config.gas_service_config_pda,
             gas_service_program_id: self.config.gas_service_program_address,
+            commitment: self.config.commitment,
         }
     }
 }
@@ -188,6 +186,7 @@ struct ConfigMetadata {
     name_of_the_solana_chain: String,
     gateway_root_pda: Pubkey,
     gas_service_config_pda: Pubkey,
+    commitment: CommitmentConfig,
     gas_service_program_id: Pubkey,
 }
 
@@ -199,99 +198,90 @@ async fn process_task(
     task_item: TaskItem,
     metadata: &ConfigMetadata,
 ) -> eyre::Result<()> {
-    use amplifier_api::types::Task::{Execute, GatewayTx, Refund, Verify};
+    use amplifier_api::types::Task;
     let signer = keypair.pubkey();
     let gateway_root_pda = metadata.gateway_root_pda;
 
     match task_item.task {
-        Verify(_verify_task) => {
-            tracing::warn!("solana blockchain is not supposed to receive the `verify_task`");
-        }
-        GatewayTx(task) => {
+        Task::GatewayTx(task) => {
             gateway_tx_task(task, gateway_root_pda, signer, solana_rpc_client, keypair).await?;
         }
-        Execute(task) => {
+        Task::Execute(task) => {
             let source_chain = task.message.source_chain.clone();
             let message_id = task.message.message_id.clone();
 
             // communicate with the destination program
-            if let Err(error) = execute_task(task, metadata, signer, solana_rpc_client, keypair)
+            let Err(error) = execute_task(task, metadata, signer, solana_rpc_client, keypair)
                 .instrument(info_span!("execute task"))
                 .in_current_span()
                 .await
-            {
-                let event = match error.downcast_ref::<ComputeBudgetError>() {
-                    Some(&ComputeBudgetError::TransactionError {
-                        source: ref _source,
-                        signature,
-                    }) => {
-                        let (meta, maybe_block_time) =
-                            get_confirmed_transaction_metadata(solana_rpc_client, &signature)
-                                .await?;
-
-                        message_executed_event(
-                            signature,
-                            source_chain,
-                            message_id,
-                            MessageExecutionStatus::Reverted,
-                            maybe_block_time,
-                            Token {
-                                token_id: None,
-                                amount: BigInt::from_u64(meta.fee),
-                            },
-                        )
-                    }
-                    _ => {
-                        // Any other error, probably happening before execution: Simulation error,
-                        // error building an instruction, parsing pubkey, rpc transport error,
-                        // etc.
-                        cannot_execute_message_event(
-                            task_item.id,
-                            source_chain,
-                            message_id,
-                            CannotExecuteMessageReason::Error,
-                            error.to_string(),
-                        )
-                    }
-                };
-
-                let command = AmplifierCommand::PublishEvents(PublishEventsRequest {
-                    events: vec![event],
-                });
-                amplifier_client.sender.send(command).await?;
+            else {
+                return Ok(());
             };
+
+            let event = match error.downcast_ref::<ComputeBudgetError>() {
+                Some(&ComputeBudgetError::TransactionError {
+                    source: ref _source,
+                    signature,
+                }) => {
+                    let tx = fetch_logs(metadata.commitment, signature, solana_rpc_client).await?;
+
+                    let tx = tx.tx();
+                    let total_fee = gateway_gas_computation::compute_total_gas(
+                        axelar_solana_gateway::id(),
+                        tx,
+                        solana_rpc_client,
+                        metadata.commitment,
+                    )
+                    .await
+                    .unwrap_or(tx.cost_in_lamports);
+
+                    message_executed_event(
+                        signature,
+                        source_chain,
+                        message_id,
+                        MessageExecutionStatus::Reverted,
+                        tx.timestamp,
+                        Token {
+                            token_id: None,
+                            amount: BigInt::from_u64(total_fee),
+                        },
+                    )
+                }
+                _ => {
+                    // Any other error, probably happening before execution: Simulation error,
+                    // error building an instruction, parsing pubkey, rpc transport error,
+                    // etc.
+                    //
+                    // todo: if we fail here, then we don't get re-imbursed for gas we spend
+                    // uploading the payload data. Wait for changes on Amplifeir API.
+                    cannot_execute_message_event(
+                        task_item.id,
+                        source_chain,
+                        message_id,
+                        CannotExecuteMessageReason::Error,
+                        error.to_string(),
+                    )
+                }
+            };
+
+            let command = AmplifierCommand::PublishEvents(PublishEventsRequest {
+                events: vec![event],
+            });
+            amplifier_client.sender.send(command).await?;
         }
-        Refund(task) => {
+        Task::Refund(task) => {
             refund_task(task, metadata, solana_rpc_client, keypair).await?;
+        }
+        Task::Verify(_verify_task) => {
+            tracing::warn!("solana blockchain is not supposed to receive the `verify_task`");
+        }
+        Task::ConstructProof(_) => {
+            // no op
         }
     };
 
     Ok(())
-}
-
-async fn get_confirmed_transaction_metadata(
-    solana_rpc_client: &RpcClient,
-    signature: &Signature,
-) -> Result<(UiTransactionStatusMeta, Option<i64>), eyre::Error> {
-    let config = RpcTransactionConfig {
-        encoding: Some(UiTransactionEncoding::Binary),
-        commitment: Some(CommitmentConfig::confirmed()),
-        max_supported_transaction_version: Some(0),
-    };
-
-    let EncodedConfirmedTransactionWithStatusMeta {
-        transaction: transaction_with_meta,
-        block_time,
-        ..
-    } = solana_rpc_client
-        .get_transaction_with_config(signature, config)
-        .await?;
-
-    let meta = transaction_with_meta
-        .meta
-        .ok_or_eyre("transaction metadata not available")?;
-
-    Ok((meta, block_time))
 }
 
 fn message_executed_event(
@@ -299,13 +289,13 @@ fn message_executed_event(
     source_chain: String,
     message_id: TxEvent,
     status: MessageExecutionStatus,
-    block_time: Option<i64>,
+    block_time: Option<DateTime<Utc>>,
     cost: Token,
 ) -> Event {
     let event_id = EventId::tx_reverted_event_id(&tx_signature.to_string());
     let metadata = MessageExecutedEventMetadata::builder().build();
     let event_metadata = EventMetadata::builder()
-        .timestamp(block_time.and_then(|secs| DateTime::from_timestamp(secs, 0)))
+        .timestamp(block_time)
         .extra(metadata)
         .build();
     let event_base = EventBase::builder()
@@ -389,10 +379,54 @@ async fn execute_task(
     )
     .await?;
 
+    // communicate with the destination program
+    let execute_call_status = match message.destination_address.parse::<Pubkey>() {
+        Ok(destination_address) => {
+            send_to_destination_program(
+                destination_address,
+                signer,
+                gateway_incoming_message_pda,
+                gateway_message_payload_pda,
+                &message,
+                payload,
+                solana_rpc_client,
+                keypair,
+            )
+            .await
+        }
+        Err(err) => Err(eyre::Error::from(err)),
+    };
+
+    // Close the MessagePaynload PDA account to reclaim funds
+    let close_payload_status = message_payload::close(
+        solana_rpc_client,
+        keypair,
+        metadata.gateway_root_pda,
+        &message,
+    )
+    .await;
+
+    // propagate the execute err if there was any
+    execute_call_status?;
+    // propagate the close payload status if there was any
+    close_payload_status?;
+    Ok(())
+}
+
+#[expect(clippy::too_many_arguments, reason = "necessary")]
+async fn send_to_destination_program(
+    destination_address: Pubkey,
+    signer: Pubkey,
+    gateway_incoming_message_pda: Pubkey,
+    gateway_message_payload_pda: Pubkey,
+    message: &Message,
+    payload: Vec<u8>,
+    solana_rpc_client: &RpcClient,
+    keypair: &Keypair,
+) -> eyre::Result<Signature> {
     // For compatibility reasons with the rest of the Axelar protocol we need add custom handling
     // for ITS & Governance programs
-    let destination_address = message.destination_address.parse::<Pubkey>()?;
-    match destination_address {
+    let execute_call_status = match destination_address {
         axelar_solana_its::ID => {
             let ix = its_instruction_builder::build_its_gmp_instruction(
                 signer,
@@ -404,41 +438,31 @@ async fn execute_task(
             )
             .await?;
 
-            send_transaction(solana_rpc_client, keypair, ix).await?;
+            send_transaction(solana_rpc_client, keypair, ix).await?
         }
         axelar_solana_governance::ID => {
             let ix = axelar_solana_governance::instructions::builder::calculate_gmp_ix(
                 signer,
                 gateway_incoming_message_pda,
                 gateway_message_payload_pda,
-                &message,
+                message,
                 &payload,
             )?;
-            send_transaction(solana_rpc_client, keypair, ix).await?;
+            send_transaction(solana_rpc_client, keypair, ix).await?
         }
         _ => {
             validate_relayer_not_in_payload(&payload, signer)?;
-
             // if security passed, we broadcast the tx
             let ix = axelar_executable::construct_axelar_executable_ix(
-                &message,
+                message,
                 &payload,
                 gateway_incoming_message_pda,
                 gateway_message_payload_pda,
             )?;
-            send_transaction(solana_rpc_client, keypair, ix).await?;
+            send_transaction(solana_rpc_client, keypair, ix).await?
         }
-    }
-
-    // Close the MessagePaynload PDA account to reclaim funds
-    message_payload::close(
-        solana_rpc_client,
-        keypair,
-        metadata.gateway_root_pda,
-        &message,
-    )
-    .await?;
-    Ok(())
+    };
+    Ok(execute_call_status)
 }
 
 /// Checks if the incoming message has already been executed.
@@ -723,7 +747,7 @@ mod tests {
     const TEST_TOKEN_SYMBOL: &str = "MTK";
 
     #[test_log::test(tokio::test)]
-    async fn process_successfull_token_deployment() {
+    async fn process_successful_token_deployment() {
         let mut fixture = setup().await;
         let (gas_config, _gas_init_sig, _counter_pda, _init_memo_sig, _init_its_sig) =
             setup_aux_contracts(&mut fixture).await;
@@ -828,7 +852,7 @@ mod tests {
 
     #[test_log::test(tokio::test)]
     #[expect(clippy::non_ascii_literal, reason = "it's cool")]
-    async fn process_successfull_transfer_with_executable() {
+    async fn process_successful_transfer_with_executable() {
         let mut fixture = setup().await;
         let (gas_config, _gas_init_sig, counter_pda, _init_memo_sig, _init_its_sig) =
             setup_aux_contracts(&mut fixture).await;
@@ -897,7 +921,7 @@ mod tests {
         logs.iter()
             .find(|log| log.contains("🦖"))
             .map(std::string::String::as_str)
-            .expect("could not find expected log emmited by the memo program");
+            .expect("could not find expected log emitted by the memo program");
 
         assert_eq!(rx_amplifier.next().await, None);
 
@@ -1072,6 +1096,7 @@ mod tests {
             gas_service_program_address: axelar_solana_gas_service::id(),
             gas_service_config_pda: gas_config.config_pda,
             signing_keypair: fixture.payer.insecure_clone(),
+            commitment: CommitmentConfig::confirmed(),
         };
         let (tx_amplifier, rx_amplifier) = futures::channel::mpsc::unbounded();
         let (task_sender, task_receiver) = futures::channel::mpsc::unbounded();
@@ -1093,7 +1118,7 @@ mod tests {
         };
         let rpc_client =
             retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
-                max_concurrent_rpc_requests: 1,
+                max_concurrent_rpc_requests: 10,
                 solana_http_rpc: rpc_client_url.parse().unwrap(),
                 commitment: CommitmentConfig::confirmed(),
             });

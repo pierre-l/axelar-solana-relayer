@@ -24,6 +24,7 @@ pedantic = { priority = -8, level = "deny" }
 nursery = { priority = -9, level = "deny" }
 
 cargo_common_metadata = "allow"
+pattern_type_mismatch = "allow"
 missing_docs_in_private_items = "allow"
 blanket_clippy_restriction_lints = "allow"
 implicit_return = "allow"
@@ -71,13 +72,14 @@ rest-service = { path = "crates/rest-service" }
 retrying-solana-http-sender = { path = "crates/retrying-solana-http-sender" }
 solana-gateway-task-processor = { path = "crates/solana-gateway-task-processor" }
 effective-tx-sender = { path = "crates/effective-tx-sender" }
+gateway-gas-computation = { path = "crates/gateway-gas-computation" }
 
 # Relayer core
-amplifier-api = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "7f84b8d" }
-relayer-engine = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "7f84b8d" }
-relayer-amplifier-api-integration = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "7f84b8d" }
-relayer-amplifier-state = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "7f84b8d" }
-core-common-serde-utils = { git = "https://github.com/eigerco/axelar-relayer-core.git", package = "common-serde-utils", rev = "7f84b8d" }
+amplifier-api = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "5c909d2" }
+relayer-engine = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "5c909d2" }
+relayer-amplifier-api-integration = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "5c909d2" }
+relayer-amplifier-state = { git = "https://github.com/eigerco/axelar-relayer-core.git", rev = "5c909d2" }
+core-common-serde-utils = { git = "https://github.com/eigerco/axelar-relayer-core.git", package = "common-serde-utils", rev = "5c909d2" }
 
 # Solana Gateway
 axelar-solana-gateway = { git = "https://github.com/eigerco/solana-axelar.git", rev = "ee2b5b0", features = ["no-entrypoint"] }
@@ -99,6 +101,7 @@ xshell = "0.2"
 
 # Utils
 arrayvec = "0.7"
+borsh = "1"
 url = { version = "2.5", features = ["serde"] }
 temp-env = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }

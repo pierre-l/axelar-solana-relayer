@@ -13,6 +13,7 @@ use gateway_event_stack::{
     build_program_event_stack, parse_gas_service_log, parse_gateway_logs, MatchContext,
     ProgramInvocationState,
 };
+use gateway_gas_computation::compute_total_gas;
 use itertools::Itertools as _;
 use relayer_amplifier_api_integration::amplifier_api::types::{
     BigInt, CallEvent, CallEventMetadata, CommandId, Event, EventBase, EventId, EventMetadata,
@@ -28,7 +29,6 @@ use solana_sdk::signature::Signature;
 /// The core component that is responsible for ingesting raw Solana events.
 ///
 /// As a result, the logs get parsed, filtererd and mapped to Amplifier API events.
-#[derive(Debug)]
 pub struct SolanaEventForwarder {
     config: crate::Config,
     solana_listener_client: solana_listener::SolanaListenerClient,
@@ -96,8 +96,13 @@ impl SolanaEventForwarder {
                 &message.logs,
                 parse_gas_service_log,
             );
-            // todo -- total cost is not representative
-            let total_cost = message.cost_in_lamports;
+            let total_cost = compute_total_gas(
+                self.config.gateway_program_id,
+                &message,
+                &self.config.rpc,
+                self.config.commitment,
+            )
+            .await?;
 
             // Collect all successful events into a vector
             let gateway_events_vec = keep_successful_events(gateway_program_stack)
@@ -457,7 +462,7 @@ fn map_gateway_event_to_amplifier_event(
                             .build(),
                     )
                     .status(MessageExecutionStatus::Successful)
-                    .source_chain(executed_message.source_address)
+                    .source_chain(executed_message.cc_id_chain)
                     .message_id(message_id)
                     .cost(
                         Token::builder()
@@ -566,25 +571,38 @@ fn construct_gas_event(
 #[cfg(test)]
 #[expect(clippy::unimplemented, reason = "needed for the test")]
 #[expect(clippy::indexing_slicing, reason = "simpler code")]
+#[expect(clippy::unreachable, reason = "simpler code")]
 mod tests {
     use core::time::Duration;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
+    use axelar_executable::EncodingScheme;
+    use axelar_solana_encoding::types::execute_data::MerkleisedPayload;
+    use axelar_solana_encoding::types::messages::{CrossChainId, Message, Messages};
+    use axelar_solana_encoding::types::payload::Payload;
+    use axelar_solana_gateway::state::incoming_message::command_id;
+    use axelar_solana_gateway::{get_incoming_message_pda, get_verifier_set_tracker_pda};
     use axelar_solana_gateway_test_fixtures::base::TestFixture;
     use axelar_solana_gateway_test_fixtures::gateway::make_verifiers_with_quorum;
     use axelar_solana_gateway_test_fixtures::SolanaAxelarIntegrationMetadata;
+    use axelar_solana_memo_program::instruction::from_axelar_to_solana::build_memo;
     use futures::{SinkExt as _, StreamExt as _};
     use pretty_assertions::assert_eq;
     use relayer_amplifier_api_integration::amplifier_api::types::{
-        BigInt, CallEvent, CallEventMetadata, Event, EventBase, EventMetadata, GasCreditEvent,
-        GatewayV2Message, PublishEventsRequest, Token, TxEvent, TxId,
+        BigInt, CallEvent, CallEventMetadata, CommandId, Event, EventBase, EventMetadata,
+        GasCreditEvent, GatewayV2Message, MessageApprovedEvent, MessageApprovedEventMetadata,
+        MessageExecutedEvent, MessageExecutedEventMetadata, MessageExecutionStatus,
+        PublishEventsRequest, Token, TxEvent, TxId,
     };
     use relayer_amplifier_api_integration::{AmplifierCommand, AmplifierCommandClient};
     use solana_listener::{fetch_logs, SolanaListenerClient};
     use solana_rpc::rpc::JsonRpcConfig;
     use solana_rpc::rpc_pubsub_service::PubSubConfig;
+    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
     use solana_sdk::account::AccountSharedData;
     use solana_sdk::commitment_config::CommitmentConfig;
+    use solana_sdk::compute_budget::ComputeBudgetInstruction;
     use solana_sdk::pubkey::Pubkey;
     use solana_sdk::signature::{Keypair, Signature};
     use solana_sdk::signer::Signer as _;
@@ -596,26 +614,10 @@ mod tests {
     #[test_log::test(tokio::test)]
     async fn event_forwrding_only_call_contract() {
         // setup
-        let config = crate::Config {
-            source_chain_name: "solana".to_owned(),
-            gateway_program_id: axelar_solana_gateway::id(),
-            gas_service_program_id: axelar_solana_gas_service::id(),
-        };
-        let (tx_amplifier, mut rx_amplifier) = futures::channel::mpsc::unbounded();
-        let (mut tx_listener, rx_listener) = futures::channel::mpsc::unbounded();
-        let amplifier_client = AmplifierCommandClient {
-            sender: tx_amplifier,
-        };
-        let solana_listener_client = SolanaListenerClient {
-            log_receiver: rx_listener,
-        };
-        let event_forwarder =
-            SolanaEventForwarder::new(config, solana_listener_client, amplifier_client);
-        let _task = tokio::spawn(event_forwarder.process_internal());
-
-        let mut fixture = setup().await;
+        let (mut fixture, rpc_client) = setup().await;
         let (_gas_config, _gas_init_sig, counter_pda, _init_memo_sig) =
             setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
 
         // solana memo program to evm raw message
         let payload = "msg memo only".to_owned();
@@ -633,27 +635,13 @@ mod tests {
         .unwrap();
         let only_call_contract_sig = fixture.send_tx_with_signatures(&[ix]).await.unwrap().0[0];
 
-        let rpc_client_url = match fixture.fixture.test_node {
-            axelar_solana_gateway_test_fixtures::base::TestNodeMode::TestValidator {
-                ref validator,
-                ..
-            } => validator.rpc_url(),
-            axelar_solana_gateway_test_fixtures::base::TestNodeMode::ProgramTest { .. } => {
-                unimplemented!()
-            }
-        };
-        let rpc_client =
-            retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
-                max_concurrent_rpc_requests: 1,
-                solana_http_rpc: rpc_client_url.parse().unwrap(),
-                commitment: CommitmentConfig::confirmed(),
-            });
         let tx = fetch_logs(
             CommitmentConfig::confirmed(),
             only_call_contract_sig,
             &rpc_client,
         )
         .await
+        .unwrap()
         .unwrap();
         tx_listener.send(tx.clone()).await.unwrap();
         let item = rx_amplifier.next().await.unwrap();
@@ -693,15 +681,498 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
-    async fn event_forwrding_only_gas_event() {
+    async fn event_forwarding_message_approved() {
         // setup
+        let (mut fixture, rpc_client) = setup().await;
+        let (_gas_config, _gas_init_sig, _counter_pda, _init_memo_sig) =
+            setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
+
+        // solana memo program to evm raw message
+        let mut signatures_to_sum = vec![];
+        let payload = "msg memo only".to_owned();
+        let payload_hash = keccak::hash(payload.as_bytes()).0;
+        let source_address = "0xdeadbeef".to_owned();
+        let cc_id_id = "0xhash-123".to_owned();
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_owned(),
+                id: cc_id_id.clone(),
+            },
+            source_address: source_address.clone(),
+            destination_chain: "solana".to_owned(),
+            destination_address: axelar_solana_memo_program::ID.to_string(),
+            payload_hash,
+        };
+        let messages = [message];
+        let (execute_data, verification_pda, messages) =
+            verify_signatures(&messages, &mut fixture, &mut signatures_to_sum).await;
+        let message = messages[0].clone();
+        let (command_id, approve_signature) = approve_message(
+            message,
+            &execute_data,
+            &mut fixture,
+            verification_pda,
+            &mut signatures_to_sum,
+        )
+        .await;
+
+        let tx = fetch_logs(
+            CommitmentConfig::confirmed(),
+            approve_signature,
+            &rpc_client,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tx_listener.send(tx.clone()).await.unwrap();
+        let item = rx_amplifier.next().await.unwrap();
+
+        let mut expected_sum = 0_u64;
+        for sig in signatures_to_sum {
+            let tx = fetch_logs(CommitmentConfig::confirmed(), sig, &rpc_client)
+                .await
+                .unwrap()
+                .unwrap();
+            expected_sum = expected_sum.saturating_add(tx.cost_in_lamports);
+        }
+
+        let event_id = TxEvent::new(approve_signature.to_string().as_str(), 4);
+        let event = MessageApprovedEvent {
+            base: EventBase {
+                event_id,
+                meta: Some(EventMetadata {
+                    tx_id: Some(TxId(approve_signature.to_string())),
+                    timestamp: tx.timestamp,
+                    from_address: Some(source_address.clone()),
+                    finalized: Some(true),
+                    extra: MessageApprovedEventMetadata {
+                        command_id: Some(CommandId(bs58::encode(command_id).into_string())),
+                    },
+                }),
+            },
+            message: GatewayV2Message {
+                message_id: TxEvent(cc_id_id.clone()),
+                source_chain: "ethereum".to_owned(),
+                source_address: "0xdeadbeef".to_owned(),
+                destination_address: axelar_solana_memo_program::ID.to_string(),
+                payload_hash: payload_hash.to_vec(),
+            },
+            cost: Token {
+                token_id: None,
+                amount: BigInt::from_u64(expected_sum),
+            },
+        };
+        assert_eq!(
+            item,
+            AmplifierCommand::PublishEvents(
+                PublishEventsRequest::builder()
+                    .events(vec![Event::MessageApproved(event)])
+                    .build()
+            )
+        );
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn event_forwarding_two_message_approved() {
+        // setup
+        let (mut fixture, rpc_client) = setup().await;
+        let (_gas_config, _gas_init_sig, _counter_pda, _init_memo_sig) =
+            setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
+
+        // solana memo program to evm raw message
+        let payload = "msg memo only".to_owned();
+        let payload_hash = keccak::hash(payload.as_bytes()).0;
+        let source_address = "0xdeadbeef".to_owned();
+        let cc_id_id = "0xhash-123".to_owned();
+        let message_one = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_owned(),
+                id: cc_id_id.clone(),
+            },
+            source_address: source_address.clone(),
+            destination_chain: "solana".to_owned(),
+            destination_address: axelar_solana_memo_program::ID.to_string(),
+            payload_hash,
+        };
+        let message_two = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_owned(),
+                id: "0xhash-333".to_owned(),
+            },
+            source_address: source_address.clone(),
+            destination_chain: "solana".to_owned(),
+            destination_address: axelar_solana_memo_program::ID.to_string(),
+            payload_hash,
+        };
+        let messages = [message_one, message_two];
+        let mut verify_sigs = vec![];
+        let (execute_data, verification_pda, messages) =
+            verify_signatures(&messages, &mut fixture, &mut verify_sigs).await;
+        let message_one = messages[0].clone();
+        let message_two = messages[1].clone();
+        let mut approve_sigs = vec![];
+        let (command_id, approve_signature) = approve_message(
+            message_one,
+            &execute_data,
+            &mut fixture,
+            verification_pda,
+            &mut approve_sigs,
+        )
+        .await;
+        approve_message(
+            message_two,
+            &execute_data,
+            &mut fixture,
+            verification_pda,
+            &mut Vec::new(),
+        )
+        .await;
+
+        let tx = fetch_logs(
+            CommitmentConfig::confirmed(),
+            approve_signature,
+            &rpc_client,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tx_listener.send(tx.clone()).await.unwrap();
+        let item = rx_amplifier.next().await.unwrap();
+
+        let mut expected_sum = 0_u64;
+        for sig in &verify_sigs {
+            let tx = fetch_logs(CommitmentConfig::confirmed(), *sig, &rpc_client)
+                .await
+                .unwrap()
+                .unwrap();
+            // because we have 2 msgs in the array, the signature verification cost is split between
+            // them
+            expected_sum =
+                expected_sum.saturating_add(tx.cost_in_lamports.checked_div(2).unwrap_or(0));
+        }
+        for sig in &approve_sigs {
+            let tx = fetch_logs(CommitmentConfig::confirmed(), *sig, &rpc_client)
+                .await
+                .unwrap()
+                .unwrap();
+            expected_sum = expected_sum.saturating_add(tx.cost_in_lamports);
+        }
+
+        let event_id = TxEvent::new(approve_signature.to_string().as_str(), 4);
+        let event = MessageApprovedEvent {
+            base: EventBase {
+                event_id,
+                meta: Some(EventMetadata {
+                    tx_id: Some(TxId(approve_signature.to_string())),
+                    timestamp: tx.timestamp,
+                    from_address: Some(source_address.clone()),
+                    finalized: Some(true),
+                    extra: MessageApprovedEventMetadata {
+                        command_id: Some(CommandId(bs58::encode(command_id).into_string())),
+                    },
+                }),
+            },
+            message: GatewayV2Message {
+                message_id: TxEvent(cc_id_id.clone()),
+                source_chain: "ethereum".to_owned(),
+                source_address: "0xdeadbeef".to_owned(),
+                destination_address: axelar_solana_memo_program::ID.to_string(),
+                payload_hash: payload_hash.to_vec(),
+            },
+            cost: Token {
+                token_id: None,
+                amount: BigInt::from_u64(expected_sum),
+            },
+        };
+        assert_eq!(
+            item,
+            AmplifierCommand::PublishEvents(
+                PublishEventsRequest::builder()
+                    .events(vec![Event::MessageApproved(event)])
+                    .build()
+            )
+        );
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn event_forwrding_execute_message() {
+        // setup
+        let (mut fixture, rpc_client) = setup().await;
+        let (_gas_config, _gas_init_sig, counter_pda, _init_memo_sig) =
+            setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
+
+        // solana memo program to evm raw message
+        let bytes = b"msg memo only";
+        let payload = build_memo(bytes, &counter_pda.0, &[], EncodingScheme::Borsh);
+        let encoded_payload = payload.encode().unwrap();
+        let payload_hash = keccak::hash(encoded_payload.as_slice()).0;
+        let source_address = "0xdeadbeef".to_owned();
+        let cc_id_id = "0xhash-123".to_owned();
+        let message = Message {
+            cc_id: CrossChainId {
+                chain: "ethereum".to_owned(),
+                id: cc_id_id.clone(),
+            },
+            source_address: source_address.clone(),
+            destination_chain: "solana".to_owned(),
+            destination_address: axelar_solana_memo_program::ID.to_string(),
+            payload_hash,
+        };
+
+        let command_id = command_id(&message.cc_id.chain, &message.cc_id.id);
+        let gateway_root_pda = fixture.gateway_root_pda;
+        let payer = fixture.payer.pubkey();
+
+        fixture
+            .sign_session_and_approve_messages(&fixture.signers.clone(), &[message.clone()])
+            .await
+            .unwrap();
+        let init_payload_sig = fixture
+            .send_tx_with_signatures(&[
+                axelar_solana_gateway::instructions::initialize_message_payload(
+                    gateway_root_pda,
+                    payer,
+                    command_id,
+                    encoded_payload
+                        .len()
+                        .try_into()
+                        .expect("Unexpected u64 overflow in buffer size"),
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap()
+            .0[0];
+
+        let write_sig_1 = fixture
+            .send_tx_with_signatures(
+                &[axelar_solana_gateway::instructions::write_message_payload(
+                    gateway_root_pda,
+                    payer,
+                    command_id,
+                    &(encoded_payload[0..10]),
+                    0,
+                )
+                .unwrap()],
+            )
+            .await
+            .unwrap()
+            .0[0];
+        let write_sig_2 = fixture
+            .send_tx_with_signatures(
+                &[axelar_solana_gateway::instructions::write_message_payload(
+                    gateway_root_pda,
+                    payer,
+                    command_id,
+                    &(encoded_payload[10..]),
+                    10,
+                )
+                .unwrap()],
+            )
+            .await
+            .unwrap()
+            .0[0];
+
+        let commit_sig = fixture
+            .send_tx_with_signatures(&[
+                axelar_solana_gateway::instructions::commit_message_payload(
+                    gateway_root_pda,
+                    payer,
+                    command_id,
+                )
+                .unwrap(),
+            ])
+            .await
+            .unwrap()
+            .0[0];
+
+        let (message_payload_pda, _bump) =
+            axelar_solana_gateway::find_message_payload_pda(gateway_root_pda, command_id, payer);
+
+        let (incoming_message_pda, _bump) = get_incoming_message_pda(&command_id);
+        let (execute_sigs, _execute_tx) = fixture
+            .send_tx_with_signatures(&[axelar_executable::construct_axelar_executable_ix(
+                &message,
+                &encoded_payload,
+                incoming_message_pda,
+                message_payload_pda,
+            )
+            .unwrap()])
+            .await
+            .unwrap();
+        let execute_sig = execute_sigs[0];
+
+        // Close message payload and reclaim lamports
+        let close_sig = fixture
+            .send_tx_with_signatures(
+                &[axelar_solana_gateway::instructions::close_message_payload(
+                    gateway_root_pda,
+                    payer,
+                    command_id,
+                )
+                .unwrap()],
+            )
+            .await
+            .unwrap()
+            .0[0];
+
+        let mut expected_sum = 0_u64;
+        for sig in [
+            close_sig,
+            execute_sig,
+            commit_sig,
+            write_sig_1,
+            write_sig_2,
+            init_payload_sig,
+        ] {
+            let tx = fetch_logs(CommitmentConfig::confirmed(), sig, &rpc_client)
+                .await
+                .unwrap()
+                .unwrap();
+            expected_sum = expected_sum.saturating_add(tx.cost_in_lamports);
+        }
+
+        let tx = fetch_logs(CommitmentConfig::confirmed(), execute_sig, &rpc_client)
+            .await
+            .unwrap()
+            .unwrap();
+        tx_listener.send(tx.clone()).await.unwrap();
+        let item = rx_amplifier.next().await.unwrap();
+        let event_id = TxEvent::new(execute_sig.to_string().as_str(), 4);
+        let event = MessageExecutedEvent {
+            status: MessageExecutionStatus::Successful,
+            source_chain: "ethereum".to_owned(),
+            base: EventBase {
+                event_id,
+                meta: Some(EventMetadata {
+                    tx_id: Some(TxId(execute_sig.to_string())),
+                    timestamp: tx.timestamp,
+                    from_address: Some(source_address.clone()),
+                    finalized: Some(true),
+                    extra: MessageExecutedEventMetadata {
+                        command_id: Some(CommandId(bs58::encode(command_id).into_string())),
+                        child_message_ids: None,
+                    },
+                }),
+            },
+            message_id: TxEvent(cc_id_id.clone()),
+            cost: Token {
+                token_id: None,
+                amount: BigInt::from_u64(expected_sum),
+            },
+        };
+        assert_eq!(
+            item,
+            AmplifierCommand::PublishEvents(
+                PublishEventsRequest::builder()
+                    .events(vec![Event::MessageExecuted(event)])
+                    .build()
+            )
+        );
+    }
+    async fn approve_message(
+        message: axelar_solana_encoding::types::execute_data::MerkleisedMessage,
+        execute_data: &axelar_solana_encoding::types::execute_data::ExecuteData,
+        fixture: &mut SolanaAxelarIntegrationMetadata,
+        verification_pda: Pubkey,
+        signatures_to_sum: &mut Vec<Signature>,
+    ) -> ([u8; 32], Signature) {
+        let command_id = command_id(
+            &message.leaf.message.cc_id.chain,
+            &message.leaf.message.cc_id.id,
+        );
+
+        let (incoming_message_pda, _incoming_message_pda_bump) =
+            get_incoming_message_pda(&command_id);
+
+        let ix = axelar_solana_gateway::instructions::approve_messages(
+            message,
+            execute_data.payload_merkle_root,
+            fixture.gateway_root_pda,
+            fixture.payer.pubkey(),
+            verification_pda,
+            incoming_message_pda,
+        )
+        .unwrap();
+        let (sigs, ..) = fixture.send_tx_with_signatures(&[ix]).await.unwrap();
+        let approve_signature = sigs[0];
+        signatures_to_sum.push(approve_signature);
+        (command_id, approve_signature)
+    }
+
+    async fn verify_signatures(
+        messages: &[Message],
+        fixture: &mut SolanaAxelarIntegrationMetadata,
+        signatures_to_sum: &mut Vec<Signature>,
+    ) -> (
+        axelar_solana_encoding::types::execute_data::ExecuteData,
+        Pubkey,
+        Vec<axelar_solana_encoding::types::execute_data::MerkleisedMessage>,
+    ) {
+        let payload = Payload::Messages(Messages(messages.to_vec()));
+        let execute_data = fixture.construct_execute_data(&fixture.signers.clone(), payload);
+        let ix = axelar_solana_gateway::instructions::initialize_payload_verification_session(
+            fixture.payer.pubkey(),
+            fixture.gateway_root_pda,
+            execute_data.payload_merkle_root,
+        )
+        .unwrap();
+        let sigs = fixture.send_tx_with_signatures(&[ix]).await.unwrap().0;
+        signatures_to_sum.push(sigs[0]);
+
+        let (verifier_set_tracker_pda, _verifier_set_tracker_bump) =
+            get_verifier_set_tracker_pda(execute_data.signing_verifier_set_merkle_root);
+
+        for signature_leaves in &execute_data.signing_verifier_set_leaves {
+            // Verify the signature
+            let ix = axelar_solana_gateway::instructions::verify_signature(
+                fixture.gateway_root_pda,
+                verifier_set_tracker_pda,
+                execute_data.payload_merkle_root,
+                signature_leaves.clone(),
+            )
+            .unwrap();
+            let (sigs, ..) = fixture
+                .send_tx_with_signatures(&[
+                    ComputeBudgetInstruction::set_compute_unit_limit(250_000),
+                    ix,
+                ])
+                .await
+                .unwrap();
+            signatures_to_sum.push(sigs[0]);
+        }
+
+        // Check that the PDA contains the expected data
+        let (verification_pda, _bump) = axelar_solana_gateway::get_signature_verification_pda(
+            &fixture.gateway_root_pda,
+            &execute_data.payload_merkle_root,
+        );
+
+        let MerkleisedPayload::NewMessages { messages } = execute_data.payload_items.clone() else {
+            unreachable!("we constructed a message batch");
+        };
+        (execute_data, verification_pda, messages)
+    }
+
+    fn setup_forwarder(
+        rpc_client: &Arc<RpcClient>,
+    ) -> (
+        futures::channel::mpsc::UnboundedReceiver<AmplifierCommand>,
+        futures::channel::mpsc::UnboundedSender<solana_listener::SolanaTransaction>,
+    ) {
+        let commitment = CommitmentConfig::confirmed();
         let config = crate::Config {
             source_chain_name: "solana".to_owned(),
             gateway_program_id: axelar_solana_gateway::id(),
             gas_service_program_id: axelar_solana_gas_service::id(),
+            rpc: Arc::clone(rpc_client),
+            commitment,
         };
-        let (tx_amplifier, mut rx_amplifier) = futures::channel::mpsc::unbounded();
-        let (mut tx_listener, rx_listener) = futures::channel::mpsc::unbounded();
+        let (tx_amplifier, rx_amplifier) = futures::channel::mpsc::unbounded();
+        let (tx_listener, rx_listener) = futures::channel::mpsc::unbounded();
         let amplifier_client = AmplifierCommandClient {
             sender: tx_amplifier,
         };
@@ -711,10 +1182,16 @@ mod tests {
         let event_forwarder =
             SolanaEventForwarder::new(config, solana_listener_client, amplifier_client);
         let _task = tokio::spawn(event_forwarder.process_internal());
+        (rx_amplifier, tx_listener)
+    }
 
-        let mut fixture = setup().await;
+    #[test_log::test(tokio::test)]
+    async fn event_forwrding_only_gas_event() {
+        // setup
+        let (mut fixture, rpc_client) = setup().await;
         let (gas_config, _gas_init_sig, _counter_pda, _init_memo_sig) =
             setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
 
         // solana memo program to evm raw message
         let signature_to_fund = [111; 64];
@@ -750,12 +1227,13 @@ mod tests {
         };
         let rpc_client =
             retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
-                max_concurrent_rpc_requests: 1,
+                max_concurrent_rpc_requests: 10,
                 solana_http_rpc: rpc_client_url.parse().unwrap(),
                 commitment: CommitmentConfig::confirmed(),
             });
         let tx = fetch_logs(CommitmentConfig::confirmed(), only_gas_add_sig, &rpc_client)
             .await
+            .unwrap()
             .unwrap();
         tx_listener.send(tx.clone()).await.unwrap();
         let item = rx_amplifier.next().await.unwrap();
@@ -796,26 +1274,10 @@ mod tests {
     #[test_log::test(tokio::test)]
     async fn event_forwrding_with_gas_and_contract_call() {
         // setup
-        let config = crate::Config {
-            source_chain_name: "solana".to_owned(),
-            gateway_program_id: axelar_solana_gateway::id(),
-            gas_service_program_id: axelar_solana_gas_service::id(),
-        };
-        let (tx_amplifier, mut rx_amplifier) = futures::channel::mpsc::unbounded();
-        let (mut tx_listener, rx_listener) = futures::channel::mpsc::unbounded();
-        let amplifier_client = AmplifierCommandClient {
-            sender: tx_amplifier,
-        };
-        let solana_listener_client = SolanaListenerClient {
-            log_receiver: rx_listener,
-        };
-        let event_forwarder =
-            SolanaEventForwarder::new(config, solana_listener_client, amplifier_client);
-        let _task = tokio::spawn(event_forwarder.process_internal());
-
-        let mut fixture = setup().await;
+        let (mut fixture, rpc_client) = setup().await;
         let (gas_config, _gas_init_sig, counter_pda, _init_memo_sig) =
             setup_aux_contracts(&mut fixture).await;
+        let (mut rx_amplifier, mut tx_listener) = setup_forwarder(&rpc_client);
 
         let payload = "msg memo and gas".to_owned();
         let destination_chain_name = "evm".to_owned();
@@ -862,7 +1324,7 @@ mod tests {
         };
         let rpc_client =
             retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
-                max_concurrent_rpc_requests: 1,
+                max_concurrent_rpc_requests: 10,
                 solana_http_rpc: rpc_client_url.parse().unwrap(),
                 commitment: CommitmentConfig::confirmed(),
             });
@@ -872,6 +1334,7 @@ mod tests {
             &rpc_client,
         )
         .await
+        .unwrap()
         .unwrap();
         tx_listener.send(tx.clone()).await.unwrap();
         let item = rx_amplifier.next().await.unwrap();
@@ -983,7 +1446,7 @@ mod tests {
             .to_owned()
     }
 
-    pub(crate) async fn setup() -> SolanaAxelarIntegrationMetadata {
+    pub(crate) async fn setup() -> (SolanaAxelarIntegrationMetadata, Arc<RpcClient>) {
         use solana_test_validator::TestValidatorGenesis;
         let mut validator = TestValidatorGenesis::default();
 
@@ -1032,7 +1495,7 @@ mod tests {
         ]);
 
         let forced_sleep = if std::env::var("CI").is_ok() {
-            Duration::from_millis(1500)
+            Duration::from_millis(1000)
         } else {
             Duration::from_millis(500)
         };
@@ -1042,7 +1505,7 @@ mod tests {
 
         let operator = Keypair::new();
         let domain_separator = [42; 32];
-        let initial_signers = make_verifiers_with_quorum(&[42], 0, 42, domain_separator);
+        let initial_signers = make_verifiers_with_quorum(&[42, 33, 26], 0, 100, domain_separator);
         let mut fixture = SolanaAxelarIntegrationMetadata {
             domain_separator,
             upgrade_authority,
@@ -1056,6 +1519,23 @@ mod tests {
 
         fixture.initialize_gateway_config_account().await.unwrap();
         fixture.payer = init_payer;
-        fixture
+
+        let rpc_client_url = match fixture.fixture.test_node {
+            axelar_solana_gateway_test_fixtures::base::TestNodeMode::TestValidator {
+                ref validator,
+                ..
+            } => validator.rpc_url(),
+            axelar_solana_gateway_test_fixtures::base::TestNodeMode::ProgramTest { .. } => {
+                unimplemented!()
+            }
+        };
+        let rpc_client =
+            retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
+                max_concurrent_rpc_requests: 10,
+                solana_http_rpc: rpc_client_url.parse().unwrap(),
+                commitment: CommitmentConfig::confirmed(),
+            });
+
+        (fixture, rpc_client)
     }
 }

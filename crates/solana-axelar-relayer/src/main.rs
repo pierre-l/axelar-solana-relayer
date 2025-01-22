@@ -33,6 +33,7 @@ async fn main() {
         &config.solana_listener_component,
         &config.solana_gateway_task_processor,
         &config.amplifier_component,
+        Arc::clone(&rpc_client),
     );
     let name_on_amplifier = config.amplifier_component.chain.clone();
     let (amplifier_component, amplifier_client, amplifier_task_receiver) =
@@ -207,6 +208,7 @@ mod tests {
                 gas_service_program_address: gas_service_program_id,
                 gas_service_config_pda,
                 signing_keypair,
+                commitment: CommitmentConfig::finalized(),
             },
             solana_rpc: retrying_solana_http_sender::Config {
                 max_concurrent_rpc_requests,

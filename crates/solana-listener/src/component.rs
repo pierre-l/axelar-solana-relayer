@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Signature;
+use solana_sdk::transaction::TransactionError;
 
 use crate::config;
 
@@ -13,9 +15,8 @@ mod signature_batch_scanner;
 mod signature_realtime_scanner;
 
 pub use log_processor::fetch_logs;
+
 /// Typical message with the produced work.
-/// Contains the handle to a task that resolves into a
-/// [`SolanaTransaction`].
 #[derive(Debug, Clone)]
 pub struct SolanaTransaction {
     /// signature of the transaction (id)
@@ -24,10 +25,69 @@ pub struct SolanaTransaction {
     pub timestamp: Option<DateTime<Utc>>,
     /// The raw transaction logs
     pub logs: Vec<String>,
+    /// The accounts that were passed to an instructoin.
+    /// - first item: the program id
+    /// - second item: the Pubkeys provided to the ix
+    /// - third item: payload data
+    pub ixs: Vec<(Pubkey, Vec<Pubkey>, Vec<u8>)>,
     /// the slot number of the tx
     pub slot: u64,
     /// How expensive was the transaction expressed in lamports
     pub cost_in_lamports: u64,
+}
+
+#[derive(Debug, Clone)]
+/// Transaction status
+pub enum TxStatus {
+    /// State when the transaction was successful
+    Successful(SolanaTransaction),
+    /// State when the transaction was unsuccessful
+    Failed {
+        /// the raw tx object
+        tx: SolanaTransaction,
+        /// the actual tx error
+        error: TransactionError,
+    },
+}
+
+impl TxStatus {
+    /// Assert that the TX was successful and return the inner object
+    ///
+    /// # Panics
+    /// if the tx had failed
+    #[must_use]
+    pub const fn tx(&self) -> &SolanaTransaction {
+        match self {
+            Self::Successful(solana_transaction) => solana_transaction,
+            Self::Failed { tx, .. } => tx,
+        }
+    }
+
+    /// Assert that the TX was successful and return the inner object
+    ///
+    /// # Panics
+    /// if the tx had failed
+    #[must_use]
+    #[expect(clippy::panic, reason = "necessary for this implementation")]
+    pub fn unwrap(self) -> SolanaTransaction {
+        match self {
+            Self::Successful(solana_transaction) => solana_transaction,
+            Self::Failed { .. } => panic!(),
+        }
+    }
+
+    /// Assert that the tx was unsuccessful and return the inner object
+    ///
+    /// # Panics
+    /// if the case was successful
+    #[must_use]
+    #[expect(clippy::panic, reason = "necessary for this implementation")]
+    pub fn unwrap_err(self) -> (SolanaTransaction, TransactionError) {
+        match self {
+            Self::Successful(..) => panic!(),
+            Self::Failed { tx, error } => (tx, error),
+        }
+    }
 }
 
 pub(crate) type MessageSender = futures::channel::mpsc::UnboundedSender<SolanaTransaction>;
@@ -137,7 +197,7 @@ mod tests {
         };
         let rpc_client =
             retrying_solana_http_sender::new_client(&retrying_solana_http_sender::Config {
-                max_concurrent_rpc_requests: 1,
+                max_concurrent_rpc_requests: 10,
                 solana_http_rpc: rpc_client_url.parse().unwrap(),
                 commitment: CommitmentConfig::confirmed(),
             });
