@@ -307,7 +307,7 @@ dependencies = [
 [[package]]
 name = "amplifier-api"
 version = "0.1.1"
-source = "git+https://github.com/eigerco/axelar-relayer-core.git?rev=5c909d2#5c909d2d0f8f5395899c4679e676a278e4340d2d"
+source = "git+https://github.com/eigerco/axelar-relayer-core?rev=0d917f6#0d917f67169cfaa8cc7db8b3d5ad91f52ccde5b1"
 dependencies = [
  "base64 0.22.1",
  "bnum 0.12.1",
@@ -1696,7 +1696,7 @@ dependencies = [
 [[package]]
 name = "common-serde-utils"
 version = "0.1.1"
-source = "git+https://github.com/eigerco/axelar-relayer-core.git?rev=5c909d2#5c909d2d0f8f5395899c4679e676a278e4340d2d"
+source = "git+https://github.com/eigerco/axelar-relayer-core?rev=0d917f6#0d917f67169cfaa8cc7db8b3d5ad91f52ccde5b1"
 dependencies = [
  "serde",
 ]
@@ -2259,6 +2259,12 @@ dependencies = [
  "quote 1.0.40",
  "syn 2.0.100",
 ]
+
+[[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "downcast"
@@ -6031,9 +6037,11 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "relayer-amplifier-api-integration"
 version = "0.1.1"
-source = "git+https://github.com/eigerco/axelar-relayer-core.git?rev=5c909d2#5c909d2d0f8f5395899c4679e676a278e4340d2d"
+source = "git+https://github.com/eigerco/axelar-relayer-core?rev=0d917f6#0d917f67169cfaa8cc7db8b3d5ad91f52ccde5b1"
 dependencies = [
  "amplifier-api",
+ "base64 0.22.1",
+ "clap 4.5.36",
  "common-serde-utils 0.1.1",
  "eyre",
  "futures 0.3.31",
@@ -6052,7 +6060,7 @@ dependencies = [
 [[package]]
 name = "relayer-amplifier-state"
 version = "0.1.1"
-source = "git+https://github.com/eigerco/axelar-relayer-core.git?rev=5c909d2#5c909d2d0f8f5395899c4679e676a278e4340d2d"
+source = "git+https://github.com/eigerco/axelar-relayer-core?rev=0d917f6#0d917f67169cfaa8cc7db8b3d5ad91f52ccde5b1"
 dependencies = [
  "amplifier-api",
 ]
@@ -6060,8 +6068,9 @@ dependencies = [
 [[package]]
 name = "relayer-engine"
 version = "0.1.1"
-source = "git+https://github.com/eigerco/axelar-relayer-core.git?rev=5c909d2#5c909d2d0f8f5395899c4679e676a278e4340d2d"
+source = "git+https://github.com/eigerco/axelar-relayer-core?rev=0d917f6#0d917f67169cfaa8cc7db8b3d5ad91f52ccde5b1"
 dependencies = [
+ "clap 4.5.36",
  "eyre",
  "serde",
  "tokio",
@@ -6194,6 +6203,7 @@ dependencies = [
  "amplifier-api",
  "axelar-solana-gateway",
  "axum 0.7.9",
+ "clap 4.5.36",
  "eyre",
  "futures 0.3.31",
  "gateway-event-stack",
@@ -6220,6 +6230,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "backoff",
+ "clap 4.5.36",
  "serde",
  "serde_json",
  "solana-client",
@@ -7312,7 +7323,9 @@ name = "solana-axelar-relayer"
 version = "0.1.0"
 dependencies = [
  "amplifier-api",
+ "clap 4.5.36",
  "color-eyre",
+ "dotenvy",
  "eyre",
  "file-based-storage",
  "indoc",
@@ -8320,6 +8333,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58",
+ "clap 4.5.36",
  "common-serde-utils 0.1.0",
  "effective-tx-sender",
  "eyre",
@@ -8694,6 +8708,7 @@ dependencies = [
  "axelar-solana-memo-program",
  "backoff",
  "chrono",
+ "clap 4.5.36",
  "common-serde-utils 0.1.0",
  "common-serde-utils 0.1.1",
  "eyre",

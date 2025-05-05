@@ -1,8 +1,11 @@
 //! Transaction relayer for Solana-Axelar integration
 
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use clap::Parser as _;
+use dotenvy::dotenv;
 use relayer_amplifier_api_integration::Amplifier;
 use relayer_engine::{RelayerComponent, RelayerEngine};
 use serde::Deserialize;
@@ -11,19 +14,15 @@ mod telemetry;
 
 #[tokio::main]
 async fn main() {
+    let _: Option<PathBuf> = dotenv().ok();
     // Load configuration
     let tracing_endpoint = std::env::var("TRACING_ENDPOINT").ok();
-    let config_file = std::env::var("CONFIG")
-        .unwrap_or_else(|_| "config.toml".to_owned())
-        .parse::<PathBuf>()
-        .expect("invalid file path");
 
     // Initialize tracing
     telemetry::init_telemetry(tracing_endpoint).expect("could not init telemetry");
     color_eyre::install().expect("color eyre could not be installed");
 
-    let config_file = std::fs::read_to_string(config_file).expect("cannot read config file");
-    let config = toml::from_str::<Config>(&config_file).expect("invalid config file");
+    let config = read_config_from_env();
 
     let file_based_storage = file_based_storage::MemmapState::new(config.storage_path)
         .expect("could not init file based storage");
@@ -101,6 +100,25 @@ pub struct Config {
     pub storage_path: std::path::PathBuf,
     /// Configuration for the REST service
     pub rest_service: rest_service::Config,
+}
+
+fn read_config_from_env() -> Config {
+    let storage_path = env::var("STORAGE_PATH").expect("failed to get STORAGE_PATH");
+    let rest_service = rest_service::Config::parse();
+    let solana_listener_component = solana_listener::Config::parse();
+    let relayer_engine = relayer_engine::Config::parse();
+    let solana_rpc = retrying_solana_http_sender::Config::parse();
+    let solana_gateway_task_processor = solana_gateway_task_processor::Config::parse();
+    let amplifier_component = relayer_amplifier_api_integration::Config::parse();
+    Config {
+        amplifier_component,
+        solana_listener_component,
+        solana_gateway_task_processor,
+        relayer_engine,
+        solana_rpc,
+        storage_path: storage_path.into(),
+        rest_service,
+    }
 }
 
 #[expect(
@@ -207,7 +225,7 @@ mod tests {
                 gateway_program_address,
                 gas_service_program_address: gas_service_program_id,
                 gas_service_config_pda,
-                signing_keypair,
+                signing_keypair: signing_keypair_as_str,
                 commitment: CommitmentConfig::finalized(),
             },
             solana_rpc: retrying_solana_http_sender::Config {
