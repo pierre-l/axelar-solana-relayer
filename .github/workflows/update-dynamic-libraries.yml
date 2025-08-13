@@ -1,0 +1,45 @@
+name: Update Dynamic Libraries
+
+on:
+  repository_dispatch:
+    types: [dynamic_libraries_updated]
+
+jobs:
+  update-libraries:
+    runs-on: ubuntu-latest
+    name: Update Dynamic Libraries
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download dynamic libraries
+        run: |
+          echo "Downloading libraries from: ${{ github.event.client_payload.download_url }}"
+          curl -L -o solana-dynamic-libraries.zip "${{ github.event.client_payload.download_url }}"
+          
+      - name: Extract and update fixtures
+        run: |
+          unzip -o solana-dynamic-libraries.zip
+          cp *.so tests/fixtures/
+          
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --quiet tests/fixtures/ || echo "changes=true" >> $GITHUB_OUTPUT
+          
+      - name: Create pull request
+        if: steps.changes.outputs.changes == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: |
+            Update dynamic libraries from ${{ github.event.client_payload.repository }}@${{ github.event.client_payload.short_sha }}
+          title: "Update dynamic libraries (${{ github.event.client_payload.short_sha }})"
+          body: |
+            Automatic update of dynamic libraries from [${{ github.event.client_payload.repository }}](${{ github.event.client_payload.repository }}).
+            
+            **Source commit**: ${{ github.event.client_payload.commit_sha }}
+            **Release**: ${{ github.event.client_payload.release_tag }}
+            
+            This PR updates the dynamic libraries in `tests/fixtures/` with the latest build.
+          branch: update-dynamic-libraries-${{ github.event.client_payload.short_sha }}
+          delete-branch: true
