@@ -1,8 +1,23 @@
 name: Update Dynamic Libraries
 
 on:
-  repository_dispatch:
-    types: [dynamic_libraries_updated]
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Source repository'
+        required: true
+      release_tag:
+        description: 'Release tag'
+        required: true
+      commit_sha:
+        description: 'Commit SHA'
+        required: true
+      short_sha:
+        description: 'Short commit SHA'
+        required: true
+      download_url:
+        description: 'Download URL for the libraries'
+        required: true
 
 jobs:
   update-libraries:
@@ -13,8 +28,8 @@ jobs:
 
       - name: Download dynamic libraries
         run: |
-          echo "Downloading libraries from: ${{ github.event.client_payload.download_url }}"
-          curl -L -o solana-dynamic-libraries.zip "${{ github.event.client_payload.download_url }}"
+          echo "Downloading libraries from: ${{ inputs.download_url }}"
+          curl -L -o solana-dynamic-libraries.zip "${{ inputs.download_url }}"
           
       - name: Extract and update fixtures
         run: |
@@ -32,14 +47,14 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: |
-            Update dynamic libraries from ${{ github.event.client_payload.repository }}@${{ github.event.client_payload.short_sha }}
-          title: "Update dynamic libraries (${{ github.event.client_payload.short_sha }})"
+            Update dynamic libraries from ${{ inputs.repository }}@${{ inputs.short_sha }}
+          title: "Update dynamic libraries (${{ inputs.short_sha }})"
           body: |
-            Automatic update of dynamic libraries from [${{ github.event.client_payload.repository }}](${{ github.event.client_payload.repository }}).
+            Automatic update of dynamic libraries from [${{ inputs.repository }}](${{ inputs.repository }}).
             
-            **Source commit**: ${{ github.event.client_payload.commit_sha }}
-            **Release**: ${{ github.event.client_payload.release_tag }}
+            **Source commit**: ${{ inputs.commit_sha }}
+            **Release**: ${{ inputs.release_tag }}
             
             This PR updates the dynamic libraries in `tests/fixtures/` with the latest build.
-          branch: update-dynamic-libraries-${{ github.event.client_payload.short_sha }}
+          branch: update-dynamic-libraries-${{ inputs.short_sha }}
           delete-branch: true
