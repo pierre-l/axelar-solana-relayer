@@ -33,8 +33,7 @@ jobs:
           
       - name: Extract and update fixtures
         run: |
-          unzip -o solana-dynamic-libraries.zip
-          cp *.so tests/fixtures/
+          unzip -o solana-dynamic-libraries.zip -d tests/fixtures/
           
       - name: Check for changes
         id: changes
